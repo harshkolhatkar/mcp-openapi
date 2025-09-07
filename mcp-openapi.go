@@ -177,6 +177,12 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		result, err = s.rpcSearchByTag(r.Context(), req.Params)
 	case "getSchemaComponent":
 		result, err = s.rpcGetSchemaComponent(r.Context(), req.Params)
+	case "initialize":
+		result, err = s.rpcInitialize(r.Context(), req.Params)
+	case "tools/list":
+		result, err = s.rpcToolsList(r.Context(), req.Params)
+	case "resources/list":
+		result, err = s.rpcResourcesList(r.Context(), req.Params)
 	default:
 		writeJSON(w, http.StatusOK, JSONRPCResponse{
 			JSONRPC: JSONRPCVersion,
@@ -558,6 +564,93 @@ func toJSONAny(v any) any {
 		return fmt.Sprintf("<unparsable-json:%T>", v)
 	}
 	return out
+}
+
+type initializeParams struct {
+	ProtocolVersion string                 `json:"protocolVersion"`
+	Capabilities    map[string]interface{} `json:"capabilities"`
+	ClientInfo      map[string]string      `json:"clientInfo"`
+}
+
+type initializeResult struct {
+	ProtocolVersion string                 `json:"protocolVersion"`
+	Capabilities    map[string]interface{} `json:"capabilities"`
+	ServerInfo      map[string]string      `json:"serverInfo"`
+}
+
+func (s *Server) rpcInitialize(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p initializeParams
+	_ = json.Unmarshal(raw, &p)
+	return initializeResult{
+		ProtocolVersion: "2025-03-26",
+		Capabilities: map[string]interface{}{
+			"tools":     map[string]bool{"listChanged": true},
+			"resources": map[string]bool{"subscribe": true},
+		},
+		ServerInfo: map[string]string{
+			"name":    "mcp-openapi-server",
+			"version": "1.0.0",
+		},
+	}, nil
+}
+
+type toolDescriptor struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Parameters  interface{} `json:"parameters"`
+}
+
+type toolsListResult struct {
+	Tools []toolDescriptor `json:"tools"`
+}
+
+func (s *Server) rpcToolsList(ctx context.Context, raw json.RawMessage) (any, error) {
+	return toolsListResult{
+		Tools: []toolDescriptor{
+			{
+				Name:        "listPaths",
+				Description: "List API paths from the loaded OpenAPI spec",
+				Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{"contains": map[string]string{"type": "string"}}},
+			},
+			{
+				Name:        "getOperationDetails",
+				Description: "Get details for a specific path and method",
+				Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{"path": map[string]string{"type": "string"}, "method": map[string]string{"type": "string"}}},
+			},
+			{
+				Name:        "searchByTag",
+				Description: "Search list of endpoints definitions using OpenAPI tag",
+				Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{"tag": map[string]string{"type": "string"}}},
+			},
+			{
+				Name:        "getSchemaComponent",
+				Description: "Search list of endpoints definitions using OpenAPI tag",
+				Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{"name": map[string]string{"type": "string"}}},
+			},
+		},
+	}, nil
+}
+
+type resourceDescriptor struct {
+	URI         string `json:"uri"`
+	Description string `json:"description"`
+}
+
+type resourcesListResult struct {
+	Resources []resourceDescriptor `json:"resources"`
+}
+
+func (s *Server) rpcResourcesList(ctx context.Context, raw json.RawMessage) (any, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.spec == nil {
+		return resourcesListResult{Resources: nil}, nil
+	}
+	return resourcesListResult{
+		Resources: []resourceDescriptor{
+			{URI: "openapi://current", Description: "Currently loaded OpenAPI specification"},
+		},
+	}, nil
 }
 
 // ---------- main ----------
