@@ -183,6 +183,8 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		result, err = s.rpcToolsList(r.Context(), req.Params)
 	case "resources/list":
 		result, err = s.rpcResourcesList(r.Context(), req.Params)
+	case "searchKeywords":
+		result, err = s.rpcSearchKeywords(r.Context(), req.Params)
 	default:
 		writeJSON(w, http.StatusOK, JSONRPCResponse{
 			JSONRPC: JSONRPCVersion,
@@ -624,7 +626,12 @@ func (s *Server) rpcToolsList(ctx context.Context, raw json.RawMessage) (any, er
 			},
 			{
 				Name:        "getSchemaComponent",
-				Description: "Search list of endpoints definitions using OpenAPI tag",
+				Description: "Get specification of an OpenAPI schema component",
+				Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{"name": map[string]string{"type": "string"}}},
+			},
+			{
+				Name:        "searchKeywords",
+				Description: "Search a keyword across path string, description, query parameters, request body parameters, response body parameters",
 				Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{"name": map[string]string{"type": "string"}}},
 			},
 		},
@@ -651,6 +658,147 @@ func (s *Server) rpcResourcesList(ctx context.Context, raw json.RawMessage) (any
 			{URI: "openapi://current", Description: "Currently loaded OpenAPI specification"},
 		},
 	}, nil
+}
+
+// RPC: searchKeywords
+type searchKeywordsParams struct {
+	Query string `json:"query"`
+}
+
+type searchKeywordsResult struct {
+	Matches []OpRef `json:"matches"`
+}
+
+func (s *Server) rpcSearchKeywords(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p searchKeywordsParams
+	if err := json.Unmarshal(raw, &p); err != nil || strings.TrimSpace(p.Query) == "" {
+		return nil, &JSONRPCError{Code: ErrCodeInvalidParams, Message: "query is required"}
+	}
+	q := strings.ToLower(p.Query)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.spec == nil {
+		return nil, errors.New("spec not loaded")
+	}
+
+	var matches []OpRef
+	for path, pi := range s.spec.Paths.Map() {
+		for method, op := range operationsOf(pi) {
+			if op == nil {
+				continue
+			}
+
+			// Check path string
+			if strings.Contains(strings.ToLower(path), q) {
+				matches = append(matches, s.makeOpRef(path, method, op))
+				continue
+			}
+
+			// Check summary/description
+			if strings.Contains(strings.ToLower(op.Summary), q) ||
+				strings.Contains(strings.ToLower(op.Description), q) {
+				matches = append(matches, s.makeOpRef(path, method, op))
+				continue
+			}
+
+			// Check parameters
+			found := false
+			for _, pr := range append(pi.Parameters, op.Parameters...) {
+				if pr == nil || pr.Value == nil {
+					continue
+				}
+				pval := pr.Value
+				if strings.Contains(strings.ToLower(pval.Name), q) ||
+					strings.Contains(strings.ToLower(pval.Description), q) {
+					found = true
+					break
+				}
+			}
+			if found {
+				matches = append(matches, s.makeOpRef(path, method, op))
+				continue
+			}
+
+			// Check request body schemas
+			if op.RequestBody != nil && op.RequestBody.Value != nil {
+				for _, mt := range op.RequestBody.Value.Content {
+					if schemaContains(mt.Schema, q) {
+						matches = append(matches, s.makeOpRef(path, method, op))
+						found = true
+						break
+					}
+				}
+				if found {
+					continue
+				}
+			}
+
+			// Check response schemas
+			for _, rref := range op.Responses.Map() {
+				if rref == nil || rref.Value == nil {
+					continue
+				}
+				for _, mt := range rref.Value.Content {
+					if schemaContains(mt.Schema, q) {
+						matches = append(matches, s.makeOpRef(path, method, op))
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+		}
+	}
+
+	return searchKeywordsResult{Matches: matches}, nil
+}
+
+// Helper to build OpRef
+func (s *Server) makeOpRef(path, method string, op *openapi3.Operation) OpRef {
+	tag := ""
+	if len(op.Tags) > 0 {
+		tag = op.Tags[0]
+	}
+	return OpRef{
+		Path:    path,
+		Method:  method,
+		OpID:    op.OperationID,
+		Tag:     tag,
+		Summary: op.Summary,
+	}
+}
+
+// Recursively search schema for keyword in title/description/property names
+func schemaContains(sref *openapi3.SchemaRef, q string) bool {
+	if sref == nil {
+		return false
+	}
+	if sref.Ref != "" && strings.Contains(strings.ToLower(sref.Ref), q) {
+		return true
+	}
+	s := sref.Value
+	if s == nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(s.Title), q) ||
+		strings.Contains(strings.ToLower(s.Description), q) {
+		return true
+	}
+	for pname, pref := range s.Properties {
+		if strings.Contains(strings.ToLower(pname), q) {
+			return true
+		}
+		if schemaContains(pref, q) {
+			return true
+		}
+	}
+	if s.Items != nil && schemaContains(s.Items, q) {
+		return true
+	}
+	return false
 }
 
 // ---------- main ----------
