@@ -28,13 +28,17 @@ curl -s localhost:8080/rpc -H 'Content-Type: application/json' -d '{
   "params": { "name": "Pet" }
 }'
 
+curl -s localhost:8080/rpc -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "searchKeywords",   
+  "params": { "query": "session" }
+}'
+
 To-Dos:
 - listOperations: Return a flat list of operations with fields helpful for ranking.
     - Parameters: none or optional text filter.
     - Result fields: path, method, operationId, summary, description, security, deprecation flag.
-- searchOperations: Full-text search over path, operationId, summary, description, parameter names, and media types.
-    - Parameters: { query: string }
-    - Result: ranked operations with snippets.
 - findByOperationId: Resolve a single operation by exact operationId.
     - Parameters: { operationId: string }
 - listSchemas: Return component schema names and brief descriptions to help pick payload shapes.
